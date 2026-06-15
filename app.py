@@ -350,6 +350,8 @@ defaults = {
     "question": "",
     "waiting_answer": False,
     "interview_done": False,
+    "consecutive_high_scores": 0,
+    "current_category_index": 0,
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -569,6 +571,24 @@ st.markdown('<hr class="hr-rule">', unsafe_allow_html=True)
 st.markdown('<div class="step-label">Step 04</div>', unsafe_allow_html=True)
 st.markdown('<div class="step-title">Interview Simulator</div>', unsafe_allow_html=True)
 
+CATEGORIES = [
+    "technical",
+    "technical",
+    "behavioral",
+    "hr",
+    "role specific",
+    "technical",
+    "behavioral",
+    "role specific",
+    "hr",
+    "technical",
+]
+
+MIN_QUESTIONS = 4
+MAX_QUESTIONS = 10
+HIGH_SCORE_THRESHOLD = 8
+HIGH_SCORE_STREAK = 3
+
 INTERVIEW_SYSTEM_PROMPT = f"""You are a strict but fair technical interviewer conducting a real job interview.
 
 You have access to the candidate's resume and the job description.
@@ -583,54 +603,77 @@ Job Description summary:
 {truncate(st.session_state.jd, 800)}
 """
 
-MAX_QUESTIONS = 5
-
 if not st.session_state.eligible:
     st.markdown('<div style="color:#555;font-size:0.85rem;">Complete ATS analysis and meet eligibility threshold to unlock interview.</div>',
                 unsafe_allow_html=True)
 
 elif st.session_state.interview_done:
+    # ── INTERVIEW SUMMARY ──
     total_score = 0
     count = 0
+    high_scores = 0
     for h in st.session_state.qa_log:
         try:
             num = float(re.search(r"(\d+(?:\.\d+)?)", h["score"]).group(1))
             total_score += num
             count += 1
+            if num >= HIGH_SCORE_THRESHOLD:
+                high_scores += 1
         except:
             pass
 
     avg = round(total_score / count, 1) if count else 0
 
+    # determine performance message
+    if avg >= 8:
+        performance = "Outstanding"
+        perf_color  = "#4caf78"
+    elif avg >= 6:
+        performance = "Good"
+        perf_color  = "#f0a500"
+    else:
+        performance = "Needs Improvement"
+        perf_color  = "#e05a5a"
+
+    early_end = st.session_state.consecutive_high_scores >= HIGH_SCORE_STREAK and count < MAX_QUESTIONS
+
     st.markdown(f"""
     <div class="summary-block">
         <div class="summary-title">Interview Complete</div>
         <div style="font-size:0.9rem;color:#aaa;margin-bottom:1rem;">
-            You answered {len(st.session_state.qa_log)} questions.
+            You answered {count} questions · {high_scores} high scores
+            {"· <span style='color:#4caf78'>Early completion — strong performance</span>" if early_end else ""}
         </div>
         <div class="score-label">Average Score</div>
         <div class="score-block">
-            <span class="score-num">{avg}</span>
+            <span class="score-num" style="color:{perf_color}">{avg}</span>
             <span class="score-denom">/10</span>
+        </div>
+        <div style="color:{perf_color};font-family:'IBM Plex Mono',monospace;font-size:0.8rem;margin-top:0.5rem;">
+            {performance}
         </div>
     </div>
     """, unsafe_allow_html=True)
 
     if st.button("Restart Interview"):
-        st.session_state.interview_history = []
-        st.session_state.qa_log            = []
-        st.session_state.question          = ""
-        st.session_state.waiting_answer    = False
-        st.session_state.interview_done    = False
+        st.session_state.interview_history     = []
+        st.session_state.qa_log                = []
+        st.session_state.question              = ""
+        st.session_state.waiting_answer        = False
+        st.session_state.interview_done        = False
+        st.session_state.consecutive_high_scores = 0
+        st.session_state.current_category_index = 0
         st.rerun()
 
 else:
+    # ── START INTERVIEW ──
     if not st.session_state.waiting_answer:
         if st.button("Begin Interview"):
             with st.spinner("Generating first question…"):
+                category = CATEGORIES[st.session_state.current_category_index]
                 st.session_state.interview_history.append({
                     "role": "user",
-                    "content": "Start the interview. Ask me the first question."
+                    "content": f"Start the interview. Ask me a {category} question."
                 })
                 q = ask_ai_with_history(INTERVIEW_SYSTEM_PROMPT, st.session_state.interview_history)
                 st.session_state.interview_history.append({"role": "assistant", "content": q})
@@ -638,14 +681,22 @@ else:
                 st.session_state.waiting_answer = True
                 st.rerun()
 
+    # ── QUESTION + ANSWER ──
     if st.session_state.waiting_answer and st.session_state.question:
 
-        q_num = len(st.session_state.qa_log) + 1
+        q_num    = len(st.session_state.qa_log) + 1
+        category = CATEGORIES[min(st.session_state.current_category_index, MAX_QUESTIONS - 1)]
 
         st.markdown(f"""
         <div class="hr-card">
-            <div class="score-label">Question {q_num} of {MAX_QUESTIONS}</div>
-            <div style="font-size:1.05rem;margin-top:0.5rem;line-height:1.6;">
+            <div style="display:flex;justify-content:space-between;align-items:center;">
+                <div class="score-label">Question {q_num}</div>
+                <div style="font-family:'IBM Plex Mono',monospace;font-size:0.65rem;
+                            color:#f0a500;border:1px solid #f0a500;padding:2px 8px;border-radius:2px;">
+                    {category.upper()}
+                </div>
+            </div>
+            <div style="font-size:1.05rem;margin-top:0.75rem;line-height:1.6;">
                 {st.session_state.question}
             </div>
         </div>
@@ -676,10 +727,15 @@ else:
                     "content": answer
                 })
 
-                if q_num >= MAX_QUESTIONS:
-                    followup = "Give feedback on this answer. This was the last question so do NOT ask another one."
+                # advance category
+                next_index = st.session_state.current_category_index + 1
+                is_last    = q_num >= MAX_QUESTIONS
+
+                if is_last:
+                    followup = "Give feedback on this answer in 2-3 lines and give a score out of 10. This was the final question, do NOT ask another one."
                 else:
-                    followup = "Give feedback on this answer in 2-3 lines, give a score out of 10, then ask the next interview question."
+                    next_category = CATEGORIES[min(next_index, MAX_QUESTIONS - 1)]
+                    followup = f"Give feedback on this answer in 2-3 lines, give a score out of 10, then ask one {next_category} question."
 
                 st.session_state.interview_history.append({
                     "role": "user",
@@ -689,7 +745,8 @@ else:
                 response = ask_ai_with_history(INTERVIEW_SYSTEM_PROMPT, st.session_state.interview_history)
                 st.session_state.interview_history.append({"role": "assistant", "content": response})
 
-            feedback, score, next_q = "", "", ""
+            # ── PARSE RESPONSE ──
+            feedback, score_text, next_q = "", "", ""
 
             if "Feedback:" in response:
                 feedback = response.split("Feedback:")[1].split("Score:")[0].strip()
@@ -697,20 +754,41 @@ else:
                 feedback = response.split("\n")[0] if response else ""
 
             score_match = re.search(r"[Ss]core[:\s]+(\d+(?:\.\d+)?)\s*/\s*10", response)
-            score = score_match.group(0) if score_match else "Score not parsed"
+            score_text  = score_match.group(0) if score_match else "Score not parsed"
 
-            if q_num < MAX_QUESTIONS:
-                lines = response.strip().split("\n")
-                next_q = lines[-1].strip() if lines else "Tell me about a challenge you faced in a project."
+            # extract numeric score for streak tracking
+            try:
+                numeric_score = float(re.search(r"(\d+(?:\.\d+)?)", score_text).group(1))
+            except:
+                numeric_score = 0
 
+            # update high score streak
+            if numeric_score >= HIGH_SCORE_THRESHOLD:
+                st.session_state.consecutive_high_scores += 1
+            else:
+                st.session_state.consecutive_high_scores = 0
+
+            if not is_last:
+                lines  = response.strip().split("\n")
+                next_q = lines[-1].strip() if lines else "Tell me about a challenge you faced."
+
+            # save to log
             st.session_state.qa_log.append({
                 "question": st.session_state.question,
                 "answer":   answer,
                 "feedback": feedback,
-                "score":    score
+                "score":    score_text
             })
 
-            if q_num >= MAX_QUESTIONS:
+            st.session_state.current_category_index = next_index
+
+            # ── CHECK END CONDITIONS ──
+            streak_done = (
+                st.session_state.consecutive_high_scores >= HIGH_SCORE_STREAK
+                and q_num >= MIN_QUESTIONS
+            )
+
+            if is_last or streak_done:
                 st.session_state.interview_done = True
                 st.session_state.waiting_answer = False
             else:
